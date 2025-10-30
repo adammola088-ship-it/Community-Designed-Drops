@@ -9,6 +9,8 @@
 (define-constant ERR-CONTRIBUTION-NOT-FOUND (err u107))
 (define-constant ERR-VOTING-ENDED (err u108))
 (define-constant ERR-VOTING-ACTIVE (err u109))
+(define-constant ERR-ALREADY-DELEGATE (err u110))
+(define-constant ERR-NOT-DELEGATE (err u111))
 (define-constant MIN-VOTING-PERIOD u144)
 (define-constant ROYALTY-BASIS-POINTS u1000)
 
@@ -52,6 +54,8 @@
 })
 
 (define-map royalty-shares {collection-id: uint, contributor: principal} uint)
+
+(define-map collection-delegates {collection-id: uint, delegate: principal} bool)
 
 (define-public (join-dao)
     (let ((caller tx-sender))
@@ -128,13 +132,51 @@
     )
 )
 
+(define-public (delegate-collection (collection-id uint) (delegate principal))
+    (let (
+        (caller tx-sender)
+        (collection (unwrap! (map-get? collections collection-id) ERR-COLLECTION-NOT-FOUND))
+        (delegate-key {collection-id: collection-id, delegate: delegate})
+    )
+        (asserts! (is-eq caller (get creator collection)) ERR-NOT-AUTHORIZED)
+        (asserts! (default-to false (map-get? dao-members delegate)) ERR-NOT-MEMBER)
+        (asserts! (not (default-to false (map-get? collection-delegates delegate-key))) ERR-ALREADY-DELEGATE)
+        (map-set collection-delegates delegate-key true)
+        (ok true)
+    )
+)
+
+(define-public (revoke-delegate (collection-id uint) (delegate principal))
+    (let (
+        (caller tx-sender)
+        (collection (unwrap! (map-get? collections collection-id) ERR-COLLECTION-NOT-FOUND))
+        (delegate-key {collection-id: collection-id, delegate: delegate})
+    )
+        (asserts! (is-eq caller (get creator collection)) ERR-NOT-AUTHORIZED)
+        (asserts! (default-to false (map-get? collection-delegates delegate-key)) ERR-NOT-DELEGATE)
+        (map-delete collection-delegates delegate-key)
+        (ok true)
+    )
+)
+
+(define-private (is-authorized-manager (collection-id uint) (caller principal))
+    (match (map-get? collections collection-id)
+        collection
+            (or 
+                (is-eq caller (get creator collection))
+                (default-to false (map-get? collection-delegates {collection-id: collection-id, delegate: caller}))
+            )
+        false
+    )
+)
+
 (define-public (start-voting-period (collection-id uint))
     (let (
         (caller tx-sender)
         (collection (unwrap! (map-get? collections collection-id) ERR-COLLECTION-NOT-FOUND))
         (current-block stacks-block-height)
     )
-        (asserts! (is-eq caller (get creator collection)) ERR-NOT-AUTHORIZED)
+        (asserts! (is-authorized-manager collection-id caller) ERR-NOT-AUTHORIZED)
         (map-set voting-periods collection-id {
             collection-id: collection-id,
             start-block: current-block,
@@ -153,7 +195,7 @@
         (voting-period (unwrap! (map-get? voting-periods collection-id) ERR-COLLECTION-NOT-FOUND))
         (current-block stacks-block-height)
     )
-        (asserts! (is-eq caller (get creator collection)) ERR-NOT-AUTHORIZED)
+        (asserts! (is-authorized-manager collection-id caller) ERR-NOT-AUTHORIZED)
         (asserts! (>= current-block (get end-block voting-period)) ERR-VOTING-ACTIVE)
         (asserts! (not (get is-ended voting-period)) ERR-VOTING-ENDED)
         (map-set voting-periods collection-id 
@@ -169,7 +211,7 @@
         (caller tx-sender)
         (collection (unwrap! (map-get? collections collection-id) ERR-COLLECTION-NOT-FOUND))
     )
-        (asserts! (is-eq caller (get creator collection)) ERR-NOT-AUTHORIZED)
+        (asserts! (is-authorized-manager collection-id caller) ERR-NOT-AUTHORIZED)
         (map-set collections collection-id 
             (merge collection {
                 total-sales: (+ (get total-sales collection) sale-amount)
@@ -287,4 +329,8 @@
 
 (define-read-only (has-voted (contribution-id uint) (voter principal))
     (default-to false (map-get? contribution-votes {contribution-id: contribution-id, voter: voter}))
+)
+
+(define-read-only (is-collection-delegate (collection-id uint) (delegate principal))
+    (default-to false (map-get? collection-delegates {collection-id: collection-id, delegate: delegate}))
 )
